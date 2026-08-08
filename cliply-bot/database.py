@@ -15,10 +15,18 @@ saving one idea. aiosqlite lets other things keep happening while a
 database call is "in flight."
 """
 
+import os
+
 import aiosqlite
 from datetime import datetime, timezone
 
-DB_PATH = "marketplace.db"
+# DB_PATH is normally just "marketplace.db" (a file right next to this
+# script) - fine for local development. In production on a platform
+# like Railway, the regular filesystem gets wiped on every redeploy, so
+# the database needs to live on a persistent Volume instead - set
+# DB_PATH=/data/marketplace.db (or wherever your Volume is mounted) as
+# an environment variable there, and this picks it up automatically.
+DB_PATH = os.getenv("DB_PATH", "marketplace.db")
 
 
 async def init_db():
