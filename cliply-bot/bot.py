@@ -113,10 +113,19 @@ async def main():
         # directly (instead of the usual `uvicorn app:app` command line)
         # so it runs as a background task INSIDE this same asyncio event
         # loop, alongside the bot, instead of as a separate process.
-        config = uvicorn.Config(webhook_server.app, host="127.0.0.1", port=WEBHOOK_PORT, log_level="info")
+        #
+        # host="0.0.0.0" (not "127.0.0.1"!) is important: 127.0.0.1 only
+        # accepts connections from inside the exact same container/machine.
+        # On a platform like Railway, the public proxy connects from
+        # OUTSIDE the container over the network - with host="127.0.0.1"
+        # it would never be able to reach this server at all, even
+        # though everything looks "Active" and healthy. 0.0.0.0 means
+        # "accept connections on any network interface," which works
+        # correctly both locally and in production.
+        config = uvicorn.Config(webhook_server.app, host="0.0.0.0", port=WEBHOOK_PORT, log_level="info")
         server = uvicorn.Server(config)
         asyncio.create_task(server.serve())
-        print(f"Webhook server listening on http://127.0.0.1:{WEBHOOK_PORT}/webhook")
+        print(f"Webhook server listening on http://0.0.0.0:{WEBHOOK_PORT}/webhook")
 
         await bot.start(TOKEN)
 
