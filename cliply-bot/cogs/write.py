@@ -32,8 +32,9 @@ from discord.ext import commands
 import checkout_flow
 import database
 from categories import CATEGORY_CHANNELS
-from utils import PRICE as WRITE_SLOT_PRICE, make_preview
+from utils import PRICE as WRITE_SLOT_PRICE, make_preview, is_free_publisher
 from cogs.marketplace import BuyButtonView
+from cogs.roles import role_name_for_category
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +211,15 @@ class DraftDecisionView(discord.ui.View):
 
         await channel.send(embed=marketplace_embed, view=BuyButtonView(idea_id=self.idea_id))
 
+        # Ping the category's "notify me" role if it exists (created via
+        # /setup-roles - see cogs/roles.py). Posted as a SEPARATE plain
+        # message rather than the content of the embed message above, so
+        # the embed itself stays clean and this ping can be safely
+        # skipped entirely if the role doesn't exist yet.
+        role = discord.utils.get(channel.guild.roles, name=role_name_for_category(idea["category"]))
+        if role is not None:
+            await channel.send(content=f"{role.mention} a new idea just dropped! 👆")
+
         await interaction.response.edit_message(
             content=f"✅ Published to {channel.mention}!",
             embed=None,
@@ -245,6 +255,18 @@ class WriteCog(commands.Cog):
     @app_commands.command(name="write", description=f"Pay ${WRITE_SLOT_PRICE} for a slot to submit an idea")
     async def write(self, interaction: discord.Interaction):
         await database.ensure_user(interaction.user.id, interaction.user.display_name)
+
+        if is_free_publisher(interaction.user):
+            # Owner/mods skip Stripe entirely - straight to category
+            # selection, same next step a paying writer reaches only
+            # AFTER their payment webhook confirms (see StartWritingView).
+            await interaction.response.send_message(
+                "✅ Free write slot (owner/mod) - which category is your idea for?",
+                view=CategorySelectView(),
+                ephemeral=True,
+            )
+            return
+
         await checkout_flow.send_checkout_link(
             interaction,
             tx_type="write_slot",

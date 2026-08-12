@@ -17,15 +17,12 @@ explicit for a single-owner bot than relying on Discord's app-team
 reading .env.
 """
 
-import os
-
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 import database
-
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+from utils import OWNER_ID
 
 
 class AdminCog(commands.Cog):

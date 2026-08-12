@@ -24,8 +24,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from utils import OWNER_ID
+
 SUPPORT_CHANNEL_ID = int(os.getenv("SUPPORT_CHANNEL_ID", "0"))
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 
 class TicketModal(discord.ui.Modal, title="Open a Support Ticket"):
