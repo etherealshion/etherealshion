@@ -1,8 +1,13 @@
 """
 cogs/support.py
 ----------------
-/ticket opens a support ticket as a NEW PRIVATE THREAD inside your
-support channel.
+Two ways to open a ticket:
+  - /ticket           - directly opens the modal, for anyone who prefers typing a command
+  - the "Open a Ticket" button - posted once via /setup-tickets (owner-only),
+    it sits in a channel permanently and opens the same modal on click
+
+Both end up creating a support ticket as a NEW PRIVATE THREAD inside
+your support channel.
 
 Why a private thread rather than just posting a message in the support
 channel: a private thread is only visible to people explicitly added
@@ -20,6 +25,7 @@ from discord import app_commands
 from discord.ext import commands
 
 SUPPORT_CHANNEL_ID = int(os.getenv("SUPPORT_CHANNEL_ID", "0"))
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 
 class TicketModal(discord.ui.Modal, title="Open a Support Ticket"):
@@ -81,6 +87,23 @@ class TicketModal(discord.ui.Modal, title="Open a Support Ticket"):
         )
 
 
+class TicketButtonView(discord.ui.View):
+    """
+    The button posted by /setup-tickets. timeout=None + a fixed
+    custom_id makes this "persistent" - it keeps working forever, even
+    across bot restarts, as long as bot.py registers it once via
+    bot.add_view() on startup (see bot.py's on_ready) - otherwise a
+    click on it after a restart would silently do nothing.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Open a Ticket", style=discord.ButtonStyle.blurple, emoji="🎫", custom_id="cliply_open_ticket")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TicketModal())
+
+
 class SupportCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -88,6 +111,31 @@ class SupportCog(commands.Cog):
     @app_commands.command(name="ticket", description="Open a private support ticket")
     async def ticket(self, interaction: discord.Interaction):
         await interaction.response.send_modal(TicketModal())
+
+    @app_commands.command(name="setup-tickets", description="Owner-only: post the 'Open a Ticket' panel in this channel")
+    async def setup_tickets(self, interaction: discord.Interaction):
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message(
+                "This command is restricted to the bot owner.",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(
+            title="🎫 Need help?",
+            description=(
+                "Click the button below to open a private ticket with our support team.\n\n"
+                "Only you and staff will be able to see it."
+            ),
+            color=discord.Color.blurple(),
+        )
+
+        # This posts a NEW, permanent message with the button - it isn't
+        # ephemeral, and isn't tied to this /setup-tickets interaction at
+        # all after this point. Running /setup-tickets again will post a
+        # second panel, so only run it once per channel you want it in.
+        await interaction.channel.send(embed=embed, view=TicketButtonView())
+        await interaction.response.send_message("✅ Ticket panel posted.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
