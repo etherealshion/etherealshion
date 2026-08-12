@@ -93,17 +93,16 @@ class RolesCog(commands.Cog):
 
     @app_commands.command(name="setup-roles", description="Owner-only: create category roles and post the role panel here")
     async def setup_roles(self, interaction: discord.Interaction):
+        # 1. Defer immediately to give the bot time to execute
+        await interaction.response.defer(ephemeral=True)
+
+        # 2. Check Owner ID using followup instead of response
         if interaction.user.id != OWNER_ID:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "This command is restricted to the bot owner.",
-                ephemeral=True,
+                ephemeral=True
             )
             return
-
-        # Creating several roles is a handful of Discord API calls in a
-        # row - deferring first protects against this taking longer
-        # than the normal 3 second response window.
-        await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild = interaction.guild
         created = []
