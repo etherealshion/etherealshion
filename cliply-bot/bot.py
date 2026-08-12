@@ -104,6 +104,7 @@ async def main():
         await bot.load_extension("cogs.marketplace")
         await bot.load_extension("cogs.write")
         await bot.load_extension("cogs.admin")
+        await bot.load_extension("cogs.support")
 
         # Give webhook_server.py a reference to this bot so it can DM
         # users once Stripe confirms a payment.

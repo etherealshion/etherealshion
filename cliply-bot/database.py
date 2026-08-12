@@ -301,6 +301,35 @@ async def get_purchases_by_buyer(buyer_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Admin cleanup - lets the owner review and remove ideas (e.g. test data
+# like "123" submissions) directly from Discord, without needing direct
+# database access.
+# ---------------------------------------------------------------------------
+
+async def get_all_ideas(limit: int = 50):
+    """Every idea regardless of status, newest first - for admin review/cleanup."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT idea_id, title, category, status FROM ideas ORDER BY idea_id DESC LIMIT ?",
+            (limit,),
+        ) as cursor:
+            return await cursor.fetchall()
+
+
+async def admin_delete_idea(idea_id: int) -> bool:
+    """
+    Permanently deletes any idea by ID, regardless of status - unlike
+    delete_idea() (used by Discard/Rewrite), this works on published or
+    even sold ideas too. Returns True if something was actually deleted.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM ideas WHERE idea_id = ?", (idea_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
 # Phase 3 additions: leaderboard and admin stats
 # ---------------------------------------------------------------------------
 
