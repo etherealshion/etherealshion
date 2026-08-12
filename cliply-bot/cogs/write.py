@@ -8,12 +8,21 @@ This cog owns the entire /write flow:
   /write
     -> bot DMs a Stripe Checkout payment link
     -> [Stripe webhook confirms payment - see webhook_server.py]
-    -> bot DMs a "Start Writing" button -> opens the modal
-    -> Modal popup: Title / Category / Description
+    -> bot DMs a "Start Writing" button
+    -> a dropdown to pick a category
+    -> THEN the modal popup: Title / Description
     -> Publish / Rewrite / Discard buttons
 
+Why the category is picked BEFORE the modal, as a separate step:
+Discord modals can only contain text-input fields - there's no way to
+put a dropdown (select menu) inside one. So picking a category has to
+happen as its own interaction first; the dropdown-selection click that
+results from it is what's allowed to open the modal afterward.
+
 Publish posts an embed with a real, working Buy button (defined in
-cogs/marketplace.py, imported below) into the #marketplace channel.
+cogs/marketplace.py, imported below) into whichever channel matches
+the idea's category (see categories.py), instead of one shared
+#marketplace channel.
 """
 
 import discord
@@ -22,6 +31,7 @@ from discord.ext import commands
 
 import checkout_flow
 import database
+from categories import CATEGORY_CHANNELS
 from utils import PRICE as WRITE_SLOT_PRICE, make_preview
 from cogs.marketplace import BuyButtonView
 
@@ -35,9 +45,9 @@ class StartWritingView(discord.ui.View):
     """
     DM'd to a writer once webhook_server.py confirms their write-slot
     payment. Clicking this is a FRESH Discord interaction, which is
-    exactly what lets us open the modal - modals can only be sent as
-    the first response to an interaction, and a webhook arriving
-    minutes after payment isn't one.
+    exactly what lets us respond with something interactive next - a
+    webhook arriving minutes after payment has no live interaction of
+    its own to work with.
 
     timeout=None + a fixed custom_id makes this a "persistent" view:
     it keeps working even if the bot restarts between payment and
@@ -50,11 +60,38 @@ class StartWritingView(discord.ui.View):
 
     @discord.ui.button(label="✏️ Start Writing", style=discord.ButtonStyle.green, custom_id="cliply_start_writing")
     async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(WriteIdeaModal())
+        await interaction.response.send_message(
+            "Which category is your idea for?",
+            view=CategorySelectView(),
+        )
 
 
 # ---------------------------------------------------------------------------
-# Step 2: the idea submission modal
+# Step 2: pick a category from a dropdown
+# ---------------------------------------------------------------------------
+
+class CategorySelect(discord.ui.Select):
+    def __init__(self):
+        options = [discord.SelectOption(label=name) for name in CATEGORY_CHANNELS.keys()]
+        super().__init__(placeholder="Choose a category...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        # self.values[0] is whichever option the writer picked. Selecting
+        # a dropdown option is itself a fresh interaction, so we're
+        # allowed to respond to it by opening the modal directly.
+        category = self.values[0]
+        await interaction.response.send_modal(WriteIdeaModal(category=category))
+
+
+class CategorySelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.add_item(CategorySelect())
+
+
+# ---------------------------------------------------------------------------
+# Step 3: the idea submission modal - title and description only now,
+# category was already picked in the previous step.
 # ---------------------------------------------------------------------------
 
 class WriteIdeaModal(discord.ui.Modal, title="Submit Your Idea"):
@@ -69,11 +106,6 @@ class WriteIdeaModal(discord.ui.Modal, title="Submit Your Idea"):
         placeholder="A short, catchy title for your idea",
         max_length=100,
     )
-    category = discord.ui.TextInput(
-        label="Category",
-        placeholder="e.g. Comedy, Tutorial, Vlog, Gaming...",
-        max_length=50,
-    )
     description = discord.ui.TextInput(
         label="Description",
         style=discord.TextStyle.paragraph,  # paragraph = multi-line box
@@ -82,6 +114,13 @@ class WriteIdeaModal(discord.ui.Modal, title="Submit Your Idea"):
         max_length=1500,
     )
 
+    def __init__(self, category: str):
+        super().__init__()
+        # Carried over from the dropdown step so on_submit knows which
+        # category this idea belongs to, and so Rewrite (below) can
+        # reopen the modal without asking for the category again.
+        self.category = category
+
     async def on_submit(self, interaction: discord.Interaction):
         """Called automatically when the user clicks Submit on the modal."""
         preview = make_preview(str(self.description))
@@ -89,7 +128,7 @@ class WriteIdeaModal(discord.ui.Modal, title="Submit Your Idea"):
         idea_id = await database.create_idea(
             writer_id=interaction.user.id,
             title=str(self.idea_title),
-            category=str(self.category),
+            category=self.category,
             full_text=str(self.description),
             preview_text=preview,
         )
@@ -101,31 +140,33 @@ class WriteIdeaModal(discord.ui.Modal, title="Submit Your Idea"):
             description=str(self.description),
             color=discord.Color.blurple(),
         )
-        embed.add_field(name="Category", value=str(self.category), inline=True)
+        embed.add_field(name="Category", value=self.category, inline=True)
         embed.set_footer(text="Review your draft, then choose what to do next.")
 
         await interaction.response.send_message(
             content="Here's your draft. What would you like to do?",
             embed=embed,
-            view=DraftDecisionView(idea_id=idea_id),
+            view=DraftDecisionView(idea_id=idea_id, category=self.category),
             ephemeral=True,
         )
 
 
 # ---------------------------------------------------------------------------
-# Step 3: Publish / Rewrite / Discard
+# Step 4: Publish / Rewrite / Discard
 # ---------------------------------------------------------------------------
 
 class DraftDecisionView(discord.ui.View):
     """
     Holds the three buttons shown after a draft is created. We store
-    idea_id on the view itself so every button's callback knows which
-    idea it's acting on.
+    idea_id AND category on the view itself - idea_id so every button
+    knows which idea it's acting on, and category so Rewrite can reopen
+    the modal without making the writer pick a category again.
     """
 
-    def __init__(self, idea_id: int):
+    def __init__(self, idea_id: int, category: str):
         super().__init__(timeout=600)  # 10 minutes to decide
         self.idea_id = idea_id
+        self.category = category
 
     @discord.ui.button(label="Publish", style=discord.ButtonStyle.green, emoji="✅")
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -146,11 +187,22 @@ class DraftDecisionView(discord.ui.View):
         marketplace_embed.add_field(name="Price", value=f"${idea['price']}", inline=True)
         marketplace_embed.set_footer(text=f"Idea #{self.idea_id} · Full text revealed to the buyer only")
 
-        channel = interaction.client.get_channel(interaction.client.marketplace_channel_id)
+        # Route to the channel that matches this idea's category, instead
+        # of one shared #marketplace channel. Falls back to the bot's
+        # general marketplace_channel_id if the category somehow isn't
+        # in CATEGORY_CHANNELS (shouldn't normally happen, since the
+        # category came from that exact dict's keys via the dropdown -
+        # this only matters if categories.py was edited AFTER this idea
+        # was drafted).
+        target_channel_id = CATEGORY_CHANNELS.get(idea["category"], interaction.client.marketplace_channel_id)
+        channel = interaction.client.get_channel(target_channel_id)
         if channel is None:
             await interaction.response.edit_message(
-                content="⚠️ Published, but I couldn't find the #marketplace channel. "
-                        "Check MARKETPLACE_CHANNEL_ID in your .env.",
+                content=(
+                    f"⚠️ Published, but I couldn't find the channel for category "
+                    f"'{idea['category']}'. Check categories.py - that channel ID "
+                    "may be wrong, or the bot may not have access to it."
+                ),
                 embed=None,
                 view=None,
             )
@@ -167,9 +219,10 @@ class DraftDecisionView(discord.ui.View):
     @discord.ui.button(label="Rewrite", style=discord.ButtonStyle.blurple, emoji="✏️")
     async def rewrite(self, interaction: discord.Interaction, button: discord.ui.Button):
         # The write slot was already paid for, so rewriting just deletes
-        # this draft and reopens a blank modal - no second charge.
+        # this draft and reopens the modal - no second charge, and no
+        # need to pick the category again since we kept it on self.
         await database.delete_idea(self.idea_id)
-        await interaction.response.send_modal(WriteIdeaModal())
+        await interaction.response.send_modal(WriteIdeaModal(category=self.category))
 
     @discord.ui.button(label="Discard", style=discord.ButtonStyle.red, emoji="🗑️")
     async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
