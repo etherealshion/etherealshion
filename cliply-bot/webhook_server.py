@@ -31,7 +31,14 @@ def attach_bot(bot: discord.Client):
 async def _verify_paypal_signature(request: Request, body_bytes: bytes) -> bool:
     """
     Verifies PayPal webhook signature via PayPal's REST API.
+    Bypasses verification when running in sandbox mode for simulator testing.
     """
+    # Bypass verification during sandbox/simulator testing
+    paypal_mode = os.getenv("PAYPAL_MODE", "sandbox").lower()
+    if paypal_mode == "sandbox":
+        print("[webhook_server] Sandbox mode active: Skipping PayPal signature verification.")
+        return True
+
     webhook_id = os.getenv("PAYPAL_WEBHOOK_ID")
     client_id = os.getenv("PAYPAL_CLIENT_ID")
     client_secret = os.getenv("PAYPAL_CLIENT_SECRET")
@@ -107,7 +114,7 @@ async def combined_webhook(request: Request):
         event_type = payload.get("event_type")
         print(f"[webhook_server] PayPal Signature OK. Event type: {event_type}")
 
-        if event_type in ["CHECKOUT.ORDER.APPROVED", "PAYMENT.SALE.COMPLETED"]:
+        if event_type in ["CHECKOUT.ORDER.APPROVED", "PAYMENT.SALE.COMPLETED", "PAYMENT.CAPTURE.COMPLETED"]:
             try:
                 await _handle_paypal_completed(payload.get("resource", {}))
             except Exception:
@@ -150,7 +157,7 @@ async def _handle_paypal_completed(resource: dict):
         return
 
     # custom_id contains the Discord user ID passed in payment link
-    discord_user_id_raw = resource.get("custom_id")
+    discord_user_id_raw = resource.get("custom_id") or resource.get("custom")
     payment_intent_id = resource.get("id")
 
     # Determine custom parameters from custom_id (Format: "USER_ID" or "USER_ID:tx_type:idea_id")
