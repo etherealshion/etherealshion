@@ -170,9 +170,26 @@ class DraftDecisionView(discord.ui.View):
 
     @discord.ui.button(label="Publish", style=discord.ButtonStyle.green, emoji="✅")
     async def publish(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # This is the fix for "didn't respond in time": Publish does TWO
+        # database writes plus a network call to post in the category
+        # channel, all before responding - combined, that occasionally
+        # ran past Discord's 3-second interaction window, especially
+        # under any latency on Railway's mounted volume or network.
+        #
+        # defer() here (bare, no thinking=True) performs what Discord
+        # calls a "deferred message update" - it's the correct kind of
+        # defer specifically for a BUTTON click that needs to edit the
+        # message the button lives on: nothing new appears, the original
+        # message just stays as-is until we call
+        # interaction.edit_original_response() below once the slower
+        # work is actually done. (thinking=True is for slash COMMANDS
+        # that want a visible "Bot is thinking..." placeholder - not
+        # what we want here.)
+        await interaction.response.defer()
+
         idea = await database.get_idea(self.idea_id)
         if idea is None:
-            await interaction.response.send_message("That draft no longer exists.", ephemeral=True)
+            await interaction.edit_original_response(content="That draft no longer exists.", embed=None, view=None)
             return
 
         await database.set_idea_status(self.idea_id, "published", timestamp_field="published_at")
@@ -197,7 +214,7 @@ class DraftDecisionView(discord.ui.View):
         target_channel_id = CATEGORY_CHANNELS.get(idea["category"], interaction.client.marketplace_channel_id)
         channel = interaction.client.get_channel(target_channel_id)
         if channel is None:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=(
                     f"⚠️ Published, but I couldn't find the channel for category "
                     f"'{idea['category']}'. Check categories.py - that channel ID "
@@ -208,9 +225,20 @@ class DraftDecisionView(discord.ui.View):
             )
             return
 
-        await channel.send(embed=marketplace_embed, view=BuyButtonView(idea_id=self.idea_id))
+        try:
+            await channel.send(embed=marketplace_embed, view=BuyButtonView(idea_id=self.idea_id))
+        except discord.Forbidden:
+            await interaction.edit_original_response(
+                content=(
+                    f"⚠️ Published to the database, but I don't have permission to post in "
+                    f"{channel.mention} - check my Send Messages/Embed Links permission there."
+                ),
+                embed=None,
+                view=None,
+            )
+            return
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=f"✅ Published to {channel.mention}!",
             embed=None,
             view=None,
