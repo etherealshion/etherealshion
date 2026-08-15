@@ -34,7 +34,6 @@ import database
 from categories import CATEGORY_CHANNELS
 from utils import PRICE as WRITE_SLOT_PRICE, make_preview, is_free_publisher
 from cogs.marketplace import BuyButtonView
-from cogs.roles import role_name_for_category
 
 
 # ---------------------------------------------------------------------------
@@ -210,15 +209,6 @@ class DraftDecisionView(discord.ui.View):
             return
 
         await channel.send(embed=marketplace_embed, view=BuyButtonView(idea_id=self.idea_id))
-
-        # Ping the category's "notify me" role if it exists (created via
-        # /setup-roles - see cogs/roles.py). Posted as a SEPARATE plain
-        # message rather than the content of the embed message above, so
-        # the embed itself stays clean and this ping can be safely
-        # skipped entirely if the role doesn't exist yet.
-        role = discord.utils.get(channel.guild.roles, name=role_name_for_category(idea["category"]))
-        if role is not None:
-            await channel.send(content=f"{role.mention} a new idea just dropped! 👆")
 
         await interaction.response.edit_message(
             content=f"✅ Published to {channel.mention}!",
