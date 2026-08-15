@@ -7,9 +7,9 @@ them, and get pinged in that category's channel whenever a new idea
 publishes there (see the ping added in cogs/write.py's Publish handler).
 
 /setup-roles (owner-only) creates any missing roles and posts a panel
-of toggle buttons - run it once, in whatever channel you want editors
-to see it (same pattern as /setup-tickets - no channel ID needed, it
-just posts wherever you run the command).
+of emoji toggle buttons - run it once, in whatever channel you want
+editors to see it (same pattern as /setup-tickets - no channel ID
+needed, it just posts wherever you run the command).
 """
 
 import discord
@@ -19,9 +19,33 @@ from discord.ext import commands
 from categories import CATEGORY_CHANNELS
 from utils import OWNER_ID
 
+# One emoji per category, for the button and embed. Add an entry here
+# for any category name you add to categories.py - anything missing
+# falls back to DEFAULT_EMOJI automatically, so it never breaks, it
+# just looks a little less tailored until you add a proper one.
+CATEGORY_EMOJIS = {
+    "Comedy": "😂",
+    "Tutorial": "🎓",
+    "Gaming": "🎮",
+    "Vlog": "📹",
+    "Educational": "📚",
+}
+DEFAULT_EMOJI = "🔔"
+
+
+def category_emoji(category: str) -> str:
+    return CATEGORY_EMOJIS.get(category, DEFAULT_EMOJI)
+
 
 def role_name_for_category(category: str) -> str:
-    """The exact role name used for a category's 'notify me' role."""
+    """
+    The exact role name used for a category's 'notify me' role.
+
+    IMPORTANT: kept intentionally stable, independent of whatever emoji
+    or styling the panel uses - if this changed every time the panel's
+    look changed, the bot would stop recognizing roles it already
+    created and start creating duplicates instead of reusing them.
+    """
     return f"🔔 {category} Fan"
 
 
@@ -39,18 +63,19 @@ class RoleToggleButton(discord.ui.Button):
     def __init__(self, category: str):
         role_name = role_name_for_category(category)
         super().__init__(
-            label=role_name,
-            style=discord.ButtonStyle.secondary,
+            label=category,
+            emoji=category_emoji(category),
+            style=discord.ButtonStyle.blurple,
             custom_id=f"role_toggle_{category}",
         )
         self.category = category
+        self._role_name = role_name
 
     async def callback(self, interaction: discord.Interaction):
-        role_name = role_name_for_category(self.category)
-        role = discord.utils.get(interaction.guild.roles, name=role_name)
+        role = discord.utils.get(interaction.guild.roles, name=self._role_name)
         if role is None:
             await interaction.response.send_message(
-                f"⚠️ The '{role_name}' role doesn't exist yet - ask the owner to run /setup-roles.",
+                f"⚠️ The '{self._role_name}' role doesn't exist yet - ask the owner to run /setup-roles.",
                 ephemeral=True,
             )
             return
@@ -62,7 +87,7 @@ class RoleToggleButton(discord.ui.Button):
                 await interaction.response.send_message(f"❌ Removed {role.mention}.", ephemeral=True)
             else:
                 await member.add_roles(role, reason="Self-assigned via role panel")
-                await interaction.response.send_message(f"✅ Added {role.mention}!", ephemeral=True)
+                await interaction.response.send_message(f"✅ Added {role.mention}! You're in.", ephemeral=True)
         except discord.Forbidden:
             await interaction.response.send_message(
                 "⚠️ I don't have permission to manage that role - my own role needs to sit "
@@ -87,6 +112,29 @@ class RolePanelView(discord.ui.View):
             self.add_item(RoleToggleButton(category))
 
 
+def build_panel_embed() -> discord.Embed:
+    """
+    The "marketing style" pitch for the role panel - a punchy headline,
+    one line per category with its emoji, and a clear call to action.
+    Pulled into its own function so it's easy to find and edit the copy
+    later without touching the command logic around it.
+    """
+    embed = discord.Embed(
+        title="🔔 Never miss a drop",
+        description=(
+            "Fresh ideas hit the marketplace all the time. Subscribe to whichever "
+            "categories you care about and get pinged the second something new "
+            "goes live.\n\n**Tap an emoji to subscribe. Tap it again to unsubscribe.**"
+        ),
+        color=discord.Color.blurple(),
+    )
+    for category in CATEGORY_CHANNELS.keys():
+        emoji = category_emoji(category)
+        embed.add_field(name=f"{emoji} {category}", value=f"New {category} drops, straight to your feed", inline=True)
+    embed.set_footer(text="Cliply · fresh ideas, delivered")
+    return embed
+
+
 class RolesCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -100,9 +148,10 @@ class RolesCog(commands.Cog):
             )
             return
 
-        # Creating several roles is a handful of Discord API calls in a
-        # row - deferring first protects against this taking longer
-        # than the normal 3 second response window.
+        # Creating several roles, then sending a message, is a handful
+        # of Discord API calls in a row - deferring first protects
+        # against this taking longer than the normal 3 second response
+        # window (Discord would otherwise show "This interaction failed").
         await interaction.response.defer(ephemeral=True, thinking=True)
 
         guild = interaction.guild
@@ -122,21 +171,22 @@ class RolesCog(commands.Cog):
                     )
                     return
 
-        embed = discord.Embed(
-            title="🔔 Get notified about new ideas",
-            description=(
-                "Click a button below to get pinged whenever a new idea is published "
-                "in that category. Click it again to remove it."
-            ),
-            color=discord.Color.blurple(),
-        )
-
-        # A new, permanent message - not tied to this interaction after
-        # this point. Running /setup-roles again posts a second panel,
-        # so only run it once per channel you want it in (it's still
-        # safe to run repeatedly for the role-creation part - it skips
-        # any role that already exists).
-        await interaction.channel.send(embed=embed, view=RolePanelView())
+        # This is the step that was failing silently before: if the bot
+        # lacked Send Messages / Embed Links in THIS channel, the send
+        # would raise, and with no try/except around it, the whole
+        # command just quietly stopped here - roles got created (that
+        # part IS wrapped above), but you'd never see why the panel
+        # itself never showed up. Now it's caught and reported clearly
+        # instead of failing invisibly.
+        try:
+            await interaction.channel.send(embed=build_panel_embed(), view=RolePanelView())
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "⚠️ Roles were created, but I don't have permission to send messages/embeds "
+                "in this channel - check my permissions here (Send Messages, Embed Links).",
+                ephemeral=True,
+            )
+            return
 
         if created:
             summary = f"✅ Role panel posted. Created {len(created)} new role(s): {', '.join(created)}."
