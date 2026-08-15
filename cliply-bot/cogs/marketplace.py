@@ -28,35 +28,35 @@ from discord.ext import commands
 
 import checkout_flow
 import database
-import stripe_service
+import paypal_service
 from utils import PRICE
 
 
 # ---------------------------------------------------------------------------
-# Delivery logic - called by webhook_server.py once Stripe confirms a
-# purchase payment actually went through. There's no live Discord
-# interaction at this point (payment can be confirmed minutes after the
-# button click, in a completely separate request from Stripe), so
-# delivery happens via DM instead of an interaction reply.
+# Delivery logic - called by webhook_server.py's /paypal/capture route
+# once PayPal confirms a purchase payment actually went through. There's
+# no live Discord interaction at this point (payment can be confirmed
+# minutes after the button click, in a completely separate browser
+# request), so delivery happens via DM instead of an interaction reply.
 # ---------------------------------------------------------------------------
 
-async def deliver_purchase(bot: discord.Client, idea_id: int, buyer_id: int, payment_intent_id: str | None) -> bool:
+async def deliver_purchase(bot: discord.Client, idea_id: int, buyer_id: int, capture_id: str | None) -> bool:
     """
     Finishes buying ONE SPECIFIC idea (used for /marketplace purchases).
 
     Uses the same atomic database.try_buy_idea() as before - even
     though the buyer already paid, we still need this check: the idea
     could have sold out to someone else in the time between them
-    clicking Buy and Stripe confirming their card. If that happens, we
-    automatically refund them via Stripe rather than leaving them
-    charged with nothing to show for it.
+    clicking Buy and completing PayPal approval. If that happens, we
+    automatically refund the capture rather than leaving them charged
+    with nothing to show for it.
     """
     success = await database.try_buy_idea(idea_id, buyer_id)
     buyer = await bot.fetch_user(buyer_id)
 
     if not success:
-        if payment_intent_id:
-            await stripe_service.refund_payment_intent(payment_intent_id)
+        if capture_id:
+            await paypal_service.refund_capture(capture_id)
         await buyer.send(
             "😕 Sorry — that idea sold out right as your payment went through. "
             "You've been automatically refunded. Try /marketplace or /random again!"
@@ -81,7 +81,7 @@ async def deliver_purchase(bot: discord.Client, idea_id: int, buyer_id: int, pay
     return True
 
 
-async def deliver_random_purchase(bot: discord.Client, buyer_id: int, payment_intent_id: str | None):
+async def deliver_random_purchase(bot: discord.Client, buyer_id: int, capture_id: str | None):
     """
     Finishes a /random purchase. We deliberately wait until THIS moment
     (payment confirmed) to pick which idea the buyer gets, rather than
@@ -95,15 +95,15 @@ async def deliver_random_purchase(bot: discord.Client, buyer_id: int, payment_in
     buyer = await bot.fetch_user(buyer_id)
 
     if idea is None:
-        if payment_intent_id:
-            await stripe_service.refund_payment_intent(payment_intent_id)
+        if capture_id:
+            await paypal_service.refund_capture(capture_id)
         await buyer.send(
             "😕 Sorry — the marketplace emptied out right as your payment went through. "
             "You've been automatically refunded. Try again once more ideas are published!"
         )
         return
 
-    await deliver_purchase(bot, idea["idea_id"], buyer_id, payment_intent_id)
+    await deliver_purchase(bot, idea["idea_id"], buyer_id, capture_id)
 
 
 # ---------------------------------------------------------------------------
