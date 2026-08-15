@@ -1,7 +1,7 @@
 """
 webhook_server.py
 ------------------
-A FastAPI app that listens for BOTH Stripe and PayPal webhook events.
+A FastAPI app that listens for BOTH Stripe and PayPal webhook events (JSON & IPN).
 Runs alongside the bot in the same Python process.
 """
 
@@ -33,7 +33,6 @@ async def _verify_paypal_signature(request: Request, body_bytes: bytes) -> bool:
     Verifies PayPal webhook signature via PayPal's REST API.
     Bypasses verification when running in sandbox mode for simulator testing.
     """
-    # Bypass verification during sandbox/simulator testing
     paypal_mode = os.getenv("PAYPAL_MODE", "sandbox").lower()
     if paypal_mode == "sandbox":
         print("[webhook_server] Sandbox mode active: Skipping PayPal signature verification.")
@@ -52,7 +51,6 @@ async def _verify_paypal_signature(request: Request, body_bytes: bytes) -> bool:
     verify_url = "https://api-m.paypal.com/v1/notifications/verify-webhook-signature"
 
     async with httpx.AsyncClient() as client:
-        # Get access token
         auth_resp = await client.post(
             auth_url,
             data={"grant_type": "client_credentials"},
@@ -64,7 +62,6 @@ async def _verify_paypal_signature(request: Request, body_bytes: bytes) -> bool:
 
         access_token = auth_resp.json().get("access_token")
 
-        # Build payload for verification endpoint
         verify_payload = {
             "transmission_id": headers.get("paypal-transmission-id"),
             "transmission_time": headers.get("paypal-transmission-time"),
@@ -75,7 +72,6 @@ async def _verify_paypal_signature(request: Request, body_bytes: bytes) -> bool:
             "webhook_event": await request.json(),
         }
 
-        # Verify signature
         verify_resp = await client.post(
             verify_url,
             json=verify_payload,
@@ -92,15 +88,37 @@ async def _verify_paypal_signature(request: Request, body_bytes: bytes) -> bool:
 @app.post("/webhook")
 async def combined_webhook(request: Request):
     print("[webhook_server] Webhook endpoint hit...")
-    raw_body = await request.body()
     
     # ------------------------------------------------------------------
-    # 1. PAYPAL WEBHOOK HANDLING
+    # 1. PAYPAL IPN (FORM DATA) HANDLING
+    # ------------------------------------------------------------------
+    content_type = request.headers.get("content-type", "")
+    if "application/x-www-form-urlencoded" in content_type:
+        print("[webhook_server] Processing PayPal IPN Form Data...")
+        form_data = await request.form()
+        payload = dict(form_data)
+
+        payment_status = payload.get("payment_status", "")
+        if payment_status in ["Completed", "Processed"]:
+            try:
+                await _handle_paypal_completed({
+                    "custom_id": payload.get("custom"),
+                    "id": payload.get("txn_id"),
+                })
+            except Exception:
+                print("[webhook_server] Error while handling PayPal IPN event:")
+                traceback.print_exc()
+
+        return {"status": "ok"}
+
+    raw_body = await request.body()
+
+    # ------------------------------------------------------------------
+    # 2. PAYPAL REST JSON WEBHOOK HANDLING
     # ------------------------------------------------------------------
     if "paypal-transmission-id" in request.headers:
-        print("[webhook_server] Processing PayPal Webhook...")
+        print("[webhook_server] Processing PayPal JSON Webhook...")
         
-        # Verify PayPal Signature
         try:
             is_valid = await _verify_paypal_signature(request, raw_body)
             if not is_valid:
@@ -124,7 +142,7 @@ async def combined_webhook(request: Request):
         return {"status": "ok"}
 
     # ------------------------------------------------------------------
-    # 2. STRIPE WEBHOOK HANDLING
+    # 3. STRIPE WEBHOOK HANDLING
     # ------------------------------------------------------------------
     sig_header = request.headers.get("stripe-signature")
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -156,11 +174,9 @@ async def _handle_paypal_completed(resource: dict):
         print("[webhook_server] Received PayPal payment but bot isn't attached yet.")
         return
 
-    # custom_id contains the Discord user ID passed in payment link
     discord_user_id_raw = resource.get("custom_id") or resource.get("custom")
     payment_intent_id = resource.get("id")
 
-    # Determine custom parameters from custom_id (Format: "USER_ID" or "USER_ID:tx_type:idea_id")
     if not discord_user_id_raw:
         print(f"[webhook_server] Ignoring PayPal resource with missing custom_id: {resource!r}")
         return
