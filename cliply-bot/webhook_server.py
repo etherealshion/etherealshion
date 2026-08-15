@@ -1,29 +1,13 @@
 """
 webhook_server.py
 ------------------
-A small FastAPI app that listens for Stripe webhook events. It runs
-ALONGSIDE the bot, IN THE SAME PYTHON PROCESS (started as a background
-task in bot.py's main()) rather than as a separate deployment. That's
-a deliberate choice: it lets this file message Discord users directly
-through the one existing bot connection, with no extra plumbing to
-pass messages between two separate processes.
-
-Why a webhook at all, instead of just trusting the browser? Because
-the browser redirect after Stripe Checkout (success_url) is NOT proof
-of payment - a user could close the tab, or the browser could fail to
-load the redirect, even after paying successfully; conversely, someone
-could visit success_url directly without ever paying. Stripe's webhook
-is the one source of truth: it's Stripe's own server telling ours,
-server-to-server, "this specific payment actually succeeded."
-
-Signature verification (stripe.Webhook.construct_event) is what stops
-someone from just POSTing a fake "payment succeeded" JSON body to this
-endpoint and getting a free write slot or idea - only a request signed
-with your actual STRIPE_WEBHOOK_SECRET will be accepted.
+A FastAPI app that listens for BOTH Stripe and PayPal webhook events.
+Runs alongside the bot in the same Python process.
 """
 
 import os
 import traceback
+import httpx
 
 import discord
 import stripe
@@ -36,9 +20,6 @@ from utils import PRICE
 
 app = FastAPI()
 
-# Set by bot.py via attach_bot() right after the bot logs in. We need a
-# live bot/Client reference here so this file can fetch users and DM
-# them - there's no Discord "interaction" available in a webhook handler.
 _bot: discord.Client | None = None
 
 
@@ -47,48 +28,149 @@ def attach_bot(bot: discord.Client):
     _bot = bot
 
 
-@app.post("/webhook")
-async def stripe_webhook(request: Request):
-    # This confirms the request reached us AT ALL - if you never see
-    # this line after paying, the problem is upstream of this file
-    # entirely (most likely: `stripe listen` isn't running, or isn't
-    # forwarding to the right port). See the troubleshooting checklist.
-    print("[webhook_server] Webhook endpoint was hit - verifying signature...")
+async def _verify_paypal_signature(request: Request, body_bytes: bytes) -> bool:
+    """
+    Verifies PayPal webhook signature via PayPal's REST API.
+    """
+    webhook_id = os.getenv("PAYPAL_WEBHOOK_ID")
+    client_id = os.getenv("PAYPAL_CLIENT_ID")
+    client_secret = os.getenv("PAYPAL_CLIENT_SECRET")
 
-    payload = await request.body()
+    if not all([webhook_id, client_id, client_secret]):
+        print("[webhook_server] Missing PayPal env vars for signature verification.")
+        return False
+
+    headers = request.headers
+    auth_url = "https://api-m.paypal.com/v1/oauth2/token"
+    verify_url = "https://api-m.paypal.com/v1/notifications/verify-webhook-signature"
+
+    async with httpx.AsyncClient() as client:
+        # Get access token
+        auth_resp = await client.post(
+            auth_url,
+            data={"grant_type": "client_credentials"},
+            auth=(client_id, client_secret),
+        )
+        if auth_resp.status_code != 200:
+            print("[webhook_server] Failed to get PayPal OAuth token.")
+            return False
+
+        access_token = auth_resp.json().get("access_token")
+
+        # Build payload for verification endpoint
+        verify_payload = {
+            "transmission_id": headers.get("paypal-transmission-id"),
+            "transmission_time": headers.get("paypal-transmission-time"),
+            "cert_url": headers.get("paypal-cert-url"),
+            "auth_algo": headers.get("paypal-auth-algo"),
+            "transmission_sig": headers.get("paypal-transmission-sig"),
+            "webhook_id": webhook_id,
+            "webhook_event": await request.json(),
+        }
+
+        # Verify signature
+        verify_resp = await client.post(
+            verify_url,
+            json=verify_payload,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+
+        if verify_resp.status_code == 200:
+            status = verify_resp.json().get("verification_status")
+            return status == "SUCCESS"
+
+    return False
+
+
+@app.post("/webhook")
+async def combined_webhook(request: Request):
+    print("[webhook_server] Webhook endpoint hit...")
+    raw_body = await request.body()
+    
+    # ------------------------------------------------------------------
+    # 1. PAYPAL WEBHOOK HANDLING
+    # ------------------------------------------------------------------
+    if "paypal-transmission-id" in request.headers:
+        print("[webhook_server] Processing PayPal Webhook...")
+        
+        # Verify PayPal Signature
+        try:
+            is_valid = await _verify_paypal_signature(request, raw_body)
+            if not is_valid:
+                print("[webhook_server] REJECTED - PayPal signature verification failed.")
+                raise HTTPException(status_code=400, detail="Invalid PayPal signature")
+        except Exception as e:
+            print(f"[webhook_server] Error verifying PayPal signature: {e}")
+            raise HTTPException(status_code=400, detail="PayPal signature verification error")
+
+        payload = await request.json()
+        event_type = payload.get("event_type")
+        print(f"[webhook_server] PayPal Signature OK. Event type: {event_type}")
+
+        if event_type in ["CHECKOUT.ORDER.APPROVED", "PAYMENT.SALE.COMPLETED"]:
+            try:
+                await _handle_paypal_completed(payload.get("resource", {}))
+            except Exception:
+                print("[webhook_server] Error while handling PayPal event:")
+                traceback.print_exc()
+
+        return {"status": "ok"}
+
+    # ------------------------------------------------------------------
+    # 2. STRIPE WEBHOOK HANDLING
+    # ------------------------------------------------------------------
     sig_header = request.headers.get("stripe-signature")
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-    except (ValueError, stripe.error.SignatureVerificationError) as error:
-        # By far the most common cause: `stripe listen` prints a NEW
-        # whsec_... secret every single time you start it. If you
-        # restarted `stripe listen` since you last copied it into
-        # .env, the old secret is now stale and every event fails here.
-        print(f"[webhook_server] REJECTED - signature verification failed: {error}")
-        print(
-            "[webhook_server] Most likely cause: STRIPE_WEBHOOK_SECRET in .env doesn't match "
-            "your current `stripe listen` session. Copy the whsec_... it printed just now, "
-            "update .env, and RESTART the bot (python bot.py) - .env is only read once at startup."
-        )
-        raise HTTPException(status_code=400, detail=f"Invalid webhook signature: {error}")
-
-    print(f"[webhook_server] Signature OK. Event type: {event['type']}")
-
-    if event["type"] == "checkout.session.completed":
+    if sig_header:
+        print("[webhook_server] Processing Stripe Webhook...")
         try:
-            await _handle_checkout_completed(event["data"]["object"])
-        except Exception:
-            # Never let a bug in here vanish silently - print the full
-            # traceback so a broken write-slot/purchase delivery is
-            # obvious in your terminal, not a mysterious "nothing happened."
-            print("[webhook_server] Error while handling checkout.session.completed:")
-            traceback.print_exc()
+            event = stripe.Webhook.construct_event(raw_body, sig_header, webhook_secret)
+        except (ValueError, stripe.error.SignatureVerificationError) as error:
+            print(f"[webhook_server] REJECTED - Stripe signature verification failed: {error}")
+            raise HTTPException(status_code=400, detail=f"Invalid webhook signature: {error}")
 
-    # Stripe just wants a 200 response to know we received the event -
-    # the body content doesn't matter to it.
-    return {"status": "ok"}
+        print(f"[webhook_server] Stripe Signature OK. Event type: {event['type']}")
+
+        if event["type"] == "checkout.session.completed":
+            try:
+                await _handle_checkout_completed(event["data"]["object"])
+            except Exception:
+                print("[webhook_server] Error while handling Stripe checkout.session.completed:")
+                traceback.print_exc()
+
+        return {"status": "ok"}
+
+    raise HTTPException(status_code=400, detail="Unknown or unsupported webhook provider")
+
+
+async def _handle_paypal_completed(resource: dict):
+    if _bot is None:
+        print("[webhook_server] Received PayPal payment but bot isn't attached yet.")
+        return
+
+    # custom_id contains the Discord user ID passed in payment link
+    discord_user_id_raw = resource.get("custom_id")
+    payment_intent_id = resource.get("id")
+
+    # Determine custom parameters from custom_id (Format: "USER_ID" or "USER_ID:tx_type:idea_id")
+    if not discord_user_id_raw:
+        print(f"[webhook_server] Ignoring PayPal resource with missing custom_id: {resource!r}")
+        return
+
+    parts = str(discord_user_id_raw).split(":")
+    discord_user_id = int(parts[0])
+    tx_type = parts[1] if len(parts) > 1 else "write_slot"
+
+    if tx_type == "write_slot":
+        await _handle_write_slot_paid(discord_user_id)
+    elif tx_type == "purchase" and len(parts) > 2:
+        idea_id = int(parts[2])
+        await deliver_purchase(_bot, idea_id, discord_user_id, payment_intent_id)
+    elif tx_type == "random_purchase":
+        await deliver_random_purchase(_bot, discord_user_id, payment_intent_id)
+    else:
+        await _handle_write_slot_paid(discord_user_id)
 
 
 async def _handle_checkout_completed(session):
@@ -96,12 +178,6 @@ async def _handle_checkout_completed(session):
         print("[webhook_server] Received a payment but the bot isn't attached yet - ignoring.")
         return
 
-    # `session.metadata` looks and prints like a plain dict but is
-    # ACTUALLY the same kind of typed Stripe object as `session` itself
-    # - I confirmed this by testing directly against the installed
-    # `stripe` library. Calling .get() on it would crash the exact
-    # same way. .to_dict() converts it into a real Python dict, on
-    # which .get() works normally.
     metadata = session.metadata.to_dict() if session.metadata else {}
     tx_type = metadata.get("type")
     discord_user_id_raw = metadata.get("discord_user_id")
@@ -125,18 +201,8 @@ async def _handle_checkout_completed(session):
 
 
 async def _handle_write_slot_paid(discord_user_id: int):
-    """
-    Confirms the write-slot payment, then DMs a "Start Writing" button.
-    We DM the button rather than opening the modal directly because a
-    modal can only be sent as the direct response to a fresh Discord
-    interaction - and a webhook arriving here has no such interaction
-    to respond to. The button click itself becomes that fresh interaction.
-    """
     user = await _bot.fetch_user(discord_user_id)
 
-    # We fetch the real user first so ensure_user() has their actual
-    # display name - calling it with a blank string would have
-    # overwritten a real name already on file for a returning user.
     await database.ensure_user(discord_user_id, display_name=user.display_name)
     await database.log_transaction(
         user_id=discord_user_id,
