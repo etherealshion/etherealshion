@@ -49,7 +49,7 @@ async def send_checkout_link(
         "custom": custom_data,
     }
 
-    paypal_url = f"https://www.paypal.com/cgi-bin/webscr?{urllib.parse.urlencode(params)}"
+    paypal_url = f"https://www.sandbox.paypal.com/cgi-bin/webscr?{urllib.parse.urlencode(params)}"
 
     link_view = PayPalChoiceView(paypal_url=paypal_url)
 
