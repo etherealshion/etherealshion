@@ -36,7 +36,9 @@ async def send_checkout_link(
     Creates a PayPal-only checkout URL and DMs it to the user.
     """
     user_id = interaction.user.id
-    paypal_email = os.getenv("PAYPAL_EMAIL", "your-paypal-email@example.com")
+    
+    # PayPal Sandbox Merchant Email (Replace with os.getenv("PAYPAL_EMAIL") when launching live)
+    paypal_email = "sb-lamkv52263940@business.example.com"
     custom_data = f"{user_id}:{tx_type}:{idea_id or 0}"
 
     # Build query parameters cleanly so prices and spaces are properly encoded
@@ -49,6 +51,7 @@ async def send_checkout_link(
         "custom": custom_data,
     }
 
+    # Sandbox URL for testing (Change back to www.paypal.com when launching live)
     paypal_url = f"https://www.sandbox.paypal.com/cgi-bin/webscr?{urllib.parse.urlencode(params)}"
 
     link_view = PayPalChoiceView(paypal_url=paypal_url)
