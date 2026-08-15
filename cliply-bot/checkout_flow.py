@@ -51,8 +51,8 @@ async def send_checkout_link(
         "custom": custom_data,
     }
 
-    # Sandbox URL for testing (Change back to www.paypal.com when launching live)
-    paypal_url = f"https://www.sandbox.paypal.com/cgi-bin/webscr?{urllib.parse.urlencode(params)}"
+# Ensure the base domain uses sandbox.paypal.com in testing mode
+paypal_url = f"https://www.sandbox.paypal.com/cgi-bin/webscr?{urllib.parse.urlencode(params)}"
 
     link_view = PayPalChoiceView(paypal_url=paypal_url)
 
