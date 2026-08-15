@@ -13,6 +13,7 @@ from utils import PRICE
 
 class PayPalChoiceView(discord.ui.View):
     """View containing only the PayPal checkout link button."""
+
     def __init__(self, paypal_url: str):
         super().__init__(timeout=None)
 
@@ -36,23 +37,33 @@ async def send_checkout_link(
     Creates a PayPal-only checkout URL and DMs it to the user.
     """
     user_id = interaction.user.id
-    
-    # PayPal Sandbox Merchant Email (Replace with os.getenv("PAYPAL_EMAIL") when launching live)
-    paypal_email = "sb-lamkv52263940@business.example.com"
+
+    # Toggle environment using env variable (defaults to sandbox)
+    paypal_mode = os.getenv("PAYPAL_MODE", "sandbox").lower()
+    paypal_email = os.getenv("PAYPAL_EMAIL", "sb-lamkv52263940@business.example.com")
+
+    base_url = (
+        "https://www.sandbox.paypal.com/cgi-bin/webscr"
+        if paypal_mode == "sandbox"
+        else "https://www.paypal.com/cgi-bin/webscr"
+    )
+
     custom_data = f"{user_id}:{tx_type}:{idea_id or 0}"
 
-    # Build query parameters cleanly so prices and spaces are properly encoded
+    # Build standard _xclick parameters with explicit checkout options
     params = {
         "cmd": "_xclick",
         "business": paypal_email,
-        "item_name": product_name,
-        "amount": f"{PRICE:.2f}",  # Forces standard 10.00 currency format
+        "item_name": str(product_name),
+        "amount": f"{float(PRICE):.2f}",
         "currency_code": "USD",
-        "custom": custom_data,
+        "custom": str(custom_data),
+        "no_shipping": "1",  # Disables physical address prompt for digital delivery
+        "no_note": "1",  # Prevents note inputs that interfere with redirect flows
+        "bn": "PP-BuyNowBF",  # Standard PayPal build notation
     }
 
-# Ensure the base domain uses sandbox.paypal.com in testing mode
-paypal_url = f"https://www.sandbox.paypal.com/cgi-bin/webscr?{urllib.parse.urlencode(params)}"
+    paypal_url = f"{base_url}?{urllib.parse.urlencode(params)}"
 
     link_view = PayPalChoiceView(paypal_url=paypal_url)
 
@@ -63,6 +74,10 @@ paypal_url = f"https://www.sandbox.paypal.com/cgi-bin/webscr?{urllib.parse.urlen
 
     try:
         await interaction.user.send(content=message_text, view=link_view)
-        await interaction.response.send_message("📬 Check your DMs for the payment link!", ephemeral=True)
+        await interaction.response.send_message(
+            "📬 Check your DMs for the payment link!", ephemeral=True
+        )
     except discord.Forbidden:
-        await interaction.response.send_message(content=message_text, view=link_view, ephemeral=True)
+        await interaction.response.send_message(
+            content=message_text, view=link_view, ephemeral=True
+        )
