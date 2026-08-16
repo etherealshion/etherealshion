@@ -29,7 +29,7 @@ from discord.ext import commands
 import checkout_flow
 import database
 import paypal_service
-from utils import PRICE
+from utils import PRICE, is_free_publisher
 
 
 # ---------------------------------------------------------------------------
@@ -118,9 +118,12 @@ class BuyButton(discord.ui.Button):
     the persistent one-button view on a #marketplace channel post, AND
     the multi-button view /marketplace sends when someone browses.
 
-    Clicking this does NOT buy the idea - it only sends a payment link.
-    The idea is actually marked sold later, by deliver_purchase() above,
-    once webhook_server.py confirms the payment succeeded.
+    Clicking this does NOT buy the idea - it only sends a payment link
+    (unless you're the owner or a mod - see is_free_publisher, in which
+    case it delivers immediately with no payment step at all). For a
+    normal paying buyer, the idea is actually marked sold later, by
+    deliver_purchase() above, once webhook_server.py confirms the
+    payment succeeded.
     """
 
     def __init__(self, idea_id: int):
@@ -135,6 +138,19 @@ class BuyButton(discord.ui.Button):
         self.idea_id = idea_id
 
     async def callback(self, interaction: discord.Interaction):
+        if is_free_publisher(interaction.user):
+            # No payment step at all - straight to delivery. Deferring
+            # first since deliver_purchase does a couple of database
+            # writes plus fetching/DMing the user, which can occasionally
+            # run past Discord's 3-second interaction window.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await deliver_purchase(interaction.client, self.idea_id, interaction.user.id, None)
+            await interaction.followup.send(
+                "✅ Free purchase (owner/mod) - check your DMs for the full idea!",
+                ephemeral=True,
+            )
+            return
+
         await checkout_flow.send_checkout_link(
             interaction,
             tx_type="purchase",
@@ -166,6 +182,15 @@ class ConfirmRandomPurchaseView(discord.ui.View):
 
     @discord.ui.button(label=f"Get Payment Link (${PRICE})", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if is_free_publisher(interaction.user):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await deliver_random_purchase(interaction.client, interaction.user.id, None)
+            await interaction.followup.send(
+                "✅ Free random purchase (owner/mod) - check your DMs!",
+                ephemeral=True,
+            )
+            return
+
         await checkout_flow.send_checkout_link(
             interaction,
             tx_type="random_purchase",
