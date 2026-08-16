@@ -107,6 +107,38 @@ async def deliver_random_purchase(bot: discord.Client, buyer_id: int, capture_id
 
 
 # ---------------------------------------------------------------------------
+# Instant delivery for owner/mods - used ONLY by the free path below.
+# Unlike deliver_purchase() (which DMs, since it's called from
+# webhook_server.py with no live interaction to respond to), this shows
+# the idea directly in the SAME interaction response - genuinely one
+# click, idea revealed right there, no DM to go check separately.
+# ---------------------------------------------------------------------------
+
+async def _deliver_purchase_instantly(interaction: discord.Interaction, idea_id: int) -> bool:
+    success = await database.try_buy_idea(idea_id, interaction.user.id)
+    if not success:
+        await interaction.followup.send("😕 That idea is no longer available.", ephemeral=True)
+        return False
+
+    idea = await database.get_idea(idea_id)
+    await database.increment_user_stat(idea["writer_id"], "ideas_sold")
+    await database.increment_user_stat(interaction.user.id, "ideas_purchased")
+    await database.log_transaction(
+        user_id=interaction.user.id,
+        tx_type="purchase",
+        amount=0,
+        idea_id=idea_id,
+        payment_status="free_owner_mod",
+    )
+
+    embed = discord.Embed(title=idea["title"], description=idea["full_text"], color=discord.Color.green())
+    embed.add_field(name="Category", value=idea["category"], inline=True)
+    embed.set_footer(text="✅ Free purchase (owner/mod) - this idea is now yours.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Buy buttons - these only START checkout. Nothing is unlocked here.
 # ---------------------------------------------------------------------------
 
@@ -120,10 +152,10 @@ class BuyButton(discord.ui.Button):
 
     Clicking this does NOT buy the idea - it only sends a payment link
     (unless you're the owner or a mod - see is_free_publisher, in which
-    case it delivers immediately with no payment step at all). For a
-    normal paying buyer, the idea is actually marked sold later, by
-    deliver_purchase() above, once webhook_server.py confirms the
-    payment succeeded.
+    case it reveals the idea immediately, right in this same click, no
+    payment and no DM needed). For a normal paying buyer, the idea is
+    actually marked sold later, by deliver_purchase() above, once
+    webhook_server.py confirms the payment succeeded.
     """
 
     def __init__(self, idea_id: int):
@@ -139,16 +171,9 @@ class BuyButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         if is_free_publisher(interaction.user):
-            # No payment step at all - straight to delivery. Deferring
-            # first since deliver_purchase does a couple of database
-            # writes plus fetching/DMing the user, which can occasionally
-            # run past Discord's 3-second interaction window.
+            # No payment, no DM - deliver right here, in this response.
             await interaction.response.defer(ephemeral=True, thinking=True)
-            await deliver_purchase(interaction.client, self.idea_id, interaction.user.id, None)
-            await interaction.followup.send(
-                "✅ Free purchase (owner/mod) - check your DMs for the full idea!",
-                ephemeral=True,
-            )
+            await _deliver_purchase_instantly(interaction, self.idea_id)
             return
 
         await checkout_flow.send_checkout_link(
@@ -184,11 +209,11 @@ class ConfirmRandomPurchaseView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         if is_free_publisher(interaction.user):
             await interaction.response.defer(ephemeral=True, thinking=True)
-            await deliver_random_purchase(interaction.client, interaction.user.id, None)
-            await interaction.followup.send(
-                "✅ Free random purchase (owner/mod) - check your DMs!",
-                ephemeral=True,
-            )
+            idea = await database.get_random_published_idea()
+            if idea is None:
+                await interaction.followup.send("The marketplace is empty right now.", ephemeral=True)
+                return
+            await _deliver_purchase_instantly(interaction, idea["idea_id"])
             return
 
         await checkout_flow.send_checkout_link(
