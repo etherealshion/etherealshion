@@ -108,10 +108,10 @@ async def deliver_random_purchase(bot: discord.Client, buyer_id: int, capture_id
 
 # ---------------------------------------------------------------------------
 # Instant delivery for owner/mods - used ONLY by the free path below.
-# Unlike deliver_purchase() (which DMs, since it's called from
-# webhook_server.py with no live interaction to respond to), this shows
-# the idea directly in the SAME interaction response - genuinely one
-# click, idea revealed right there, no DM to go check separately.
+# Delivers via DM, same as a normal paid purchase does (deliver_purchase
+# above) - the only difference is WHEN it happens: instantly on click,
+# instead of waiting for a webhook to confirm a payment that never
+# needs to occur for the owner/mods in the first place.
 # ---------------------------------------------------------------------------
 
 async def _deliver_purchase_instantly(interaction: discord.Interaction, idea_id: int) -> bool:
@@ -134,7 +134,15 @@ async def _deliver_purchase_instantly(interaction: discord.Interaction, idea_id:
     embed = discord.Embed(title=idea["title"], description=idea["full_text"], color=discord.Color.green())
     embed.add_field(name="Category", value=idea["category"], inline=True)
     embed.set_footer(text="✅ Free purchase (owner/mod) - this idea is now yours.")
-    await interaction.followup.send(embed=embed, ephemeral=True)
+
+    try:
+        await interaction.user.send(embed=embed)
+        await interaction.followup.send("✅ Free purchase (owner/mod) - check your DMs!", ephemeral=True)
+    except discord.Forbidden:
+        # Their DMs are closed to server members - fall back to showing
+        # it right here instead, same fallback used in checkout_flow.py.
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     return True
 
 
