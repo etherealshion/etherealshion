@@ -37,7 +37,7 @@ MODE = os.getenv("PAYPAL_MODE", "sandbox").lower()  # "sandbox" or "live"
 
 BASE_URL = "https://api-m.sandbox.paypal.com" if MODE == "sandbox" else "https://api-m.paypal.com"
 
-PRICE_USD = "10.00"
+PRICE_USD = "00.01"
 
 
 def _require_credentials():
