@@ -80,16 +80,18 @@ async def send_checkout_link(
     link_view = discord.ui.View(timeout=None)
     link_view.add_item(
         discord.ui.Button(
-            label=f"Pay ${PRICE} with PayPal",
+            label=f"Pay ${PRICE} - Card or PayPal",
             style=discord.ButtonStyle.link,
             url=approve_url,
-            emoji="🅿️",
+            emoji="💳",
         )
     )
 
     message_text = (
-        f"Complete your ${PRICE} payment below. I'll message you again the moment "
-        "it's confirmed - usually just a few seconds after you approve it on PayPal."
+        f"Complete your ${PRICE} payment below - **no PayPal account needed**, you can "
+        "pay with any credit or debit card directly on that page (or log in with PayPal "
+        "if you prefer). I'll message you again the moment it's confirmed - usually just "
+        "a few seconds after you pay."
     )
 
     try:
