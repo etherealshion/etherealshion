@@ -37,8 +37,6 @@ MODE = os.getenv("PAYPAL_MODE", "sandbox").lower()  # "sandbox" or "live"
 
 BASE_URL = "https://api-m.sandbox.paypal.com" if MODE == "sandbox" else "https://api-m.paypal.com"
 
-PRICE_USD = "00.01"
-
 
 def _require_credentials():
     if not CLIENT_ID or not CLIENT_SECRET:
@@ -74,12 +72,22 @@ async def _get_access_token() -> str:
         return response.json()["access_token"]
 
 
-async def create_order(return_url: str, cancel_url: str, product_name: str, custom_id: str) -> tuple[str, str]:
+async def create_order(
+    return_url: str,
+    cancel_url: str,
+    product_name: str,
+    custom_id: str,
+    amount_usd: str,
+) -> tuple[str, str]:
     """
-    Creates a PayPal Order for a flat $10 charge. Returns
+    Creates a PayPal Order for the given dollar amount. Returns
     (order_id, approve_url) - send the buyer to approve_url. PayPal
     redirects them to return_url (with ?token=<order_id> appended) once
     they approve, or to cancel_url if they back out without paying.
+
+    amount_usd must be a string like "10.00" - PayPal's API wants the
+    exact decimal string, not a float (floats can introduce rounding
+    errors like 9.999999999 that PayPal will reject).
     """
     token = await _get_access_token()
 
@@ -96,7 +104,7 @@ async def create_order(return_url: str, cancel_url: str, product_name: str, cust
                     {
                         "custom_id": custom_id,
                         "description": product_name,
-                        "amount": {"currency_code": "USD", "value": PRICE_USD},
+                        "amount": {"currency_code": "USD", "value": amount_usd},
                     }
                 ],
                 "application_context": {
@@ -104,6 +112,15 @@ async def create_order(return_url: str, cancel_url: str, product_name: str, cust
                     "cancel_url": cancel_url,
                     "user_action": "PAY_NOW",
                     "brand_name": "Cliply",
+                    # This is the actual fix for buyers landing on a
+                    # login screen: without it, PayPal defaults to
+                    # LOGIN. "BILLING" tells it to open straight to the
+                    # guest card-entry screen instead - completely
+                    # separate from (and not dependent on) the legacy
+                    # "PayPal account optional" toggle in classic
+                    # Website Payments Preferences, which only applies
+                    # to old-style _xclick buttons, not this API.
+                    "landing_page": "BILLING",
                 },
             },
         )

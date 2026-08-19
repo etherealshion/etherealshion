@@ -31,6 +31,7 @@ from discord.ext import commands
 
 import checkout_flow
 import database
+import subscriptions
 from categories import CATEGORY_CHANNELS
 from utils import PRICE as WRITE_SLOT_PRICE, make_preview, is_free_publisher
 from cogs.marketplace import BuyButtonView
@@ -201,7 +202,11 @@ class DraftDecisionView(discord.ui.View):
             color=discord.Color.gold(),
         )
         marketplace_embed.add_field(name="Category", value=idea["category"], inline=True)
-        marketplace_embed.add_field(name="Price", value=f"${idea['price']}", inline=True)
+        marketplace_embed.add_field(
+            name="Price",
+            value=f"${idea['price']} (${subscriptions.DISCOUNT_PRICE} with a 30-Day Pass - /subscribe)",
+            inline=True,
+        )
         marketplace_embed.set_footer(text=f"Idea #{self.idea_id} · Full text revealed to the buyer only")
 
         # Route to the channel that matches this idea's category, instead

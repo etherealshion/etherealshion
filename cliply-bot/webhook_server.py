@@ -31,6 +31,7 @@ from fastapi.responses import HTMLResponse
 
 import database
 import paypal_service
+import subscriptions
 from cogs.marketplace import deliver_purchase, deliver_random_purchase
 from cogs.write import StartWritingView
 from utils import PRICE
@@ -114,6 +115,8 @@ async def paypal_capture(request: Request):
         await deliver_purchase(_bot, idea_id, discord_user_id, capture_id)
     elif tx_type == "random_purchase":
         await deliver_random_purchase(_bot, discord_user_id, capture_id)
+    elif tx_type == "subscription":
+        await _handle_subscription_paid(discord_user_id)
     else:
         print(f"[webhook_server] Unknown/incomplete tx_type on capture: {tx_type!r}")
         return _page(
@@ -154,4 +157,31 @@ async def _handle_write_slot_paid(discord_user_id: int):
     await user.send(
         content="✅ Payment confirmed! Click below when you're ready to submit your idea:",
         view=StartWritingView(),
+    )
+
+
+async def _handle_subscription_paid(discord_user_id: int):
+    """
+    Activates (or extends) the buyer's 30-Day Pass, then DMs a
+    confirmation with the exact date it expires.
+    """
+    user = await _bot.fetch_user(discord_user_id)
+
+    await database.ensure_user(discord_user_id, display_name=user.display_name)
+    await database.log_transaction(
+        user_id=discord_user_id,
+        tx_type="subscription",
+        amount=subscriptions.SUBSCRIPTION_PRICE,
+        idea_id=None,
+        payment_status="confirmed",
+    )
+
+    new_expiry = await subscriptions.activate_pass(discord_user_id)
+
+    await user.send(
+        content=(
+            f"✅ Your 30-Day Pass is active! Writing and buying ideas is now "
+            f"${subscriptions.DISCOUNT_PRICE} instead of ${PRICE}, until "
+            f"**{new_expiry.strftime('%B %d, %Y')}**."
+        )
     )
