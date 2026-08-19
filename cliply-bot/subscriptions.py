@@ -21,8 +21,8 @@ from datetime import datetime, timedelta, timezone
 import database
 from utils import PRICE, is_free_publisher
 
-SUBSCRIPTION_PRICE = 5
-DISCOUNT_PRICE = 2
+SUBSCRIPTION_PRICE = 0.02
+DISCOUNT_PRICE = 0.01
 PASS_DURATION_DAYS = 30
 
 
