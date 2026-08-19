@@ -1,13 +1,12 @@
 """
 checkout_flow.py
 -----------------
-One shared helper, used by cogs/write.py (write slots), cogs/marketplace.py
-(purchases), and cogs/subscription.py (the 30-Day Pass itself), so the
-"create a PayPal order and get the approval link in front of the buyer"
-logic only exists in one place.
+One shared helper, used by both cogs/write.py (write slots) and
+cogs/marketplace.py (purchases), so the "create a PayPal order and get
+the approval link in front of the buyer" logic only exists in one place.
 
-Lives at the project root (not inside cogs/) so no cog needs to import
-it FROM another cog - same reasoning as utils.py.
+Lives at the project root (not inside cogs/) so neither cog needs to
+import it FROM the other - same reasoning as utils.py.
 """
 
 import os
@@ -16,7 +15,6 @@ import urllib.parse
 import discord
 
 import paypal_service
-import subscriptions
 from utils import PRICE
 
 # Your app's public URL, e.g. https://your-app.up.railway.app - PayPal
@@ -26,20 +24,6 @@ from utils import PRICE
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 
 
-async def _resolve_amount(interaction: discord.Interaction, tx_type: str) -> int:
-    """
-    The dollar amount to actually charge, in whole dollars:
-      - "subscription" is always the flat $5 pass price.
-      - write_slot / purchase / random_purchase depend on the buyer:
-        $2 if they have an active 30-Day Pass, otherwise the normal $10.
-        (Owner/mods never reach this function at all - see is_free_publisher
-        checks in write.py/marketplace.py, which skip checkout entirely.)
-    """
-    if tx_type == "subscription":
-        return subscriptions.SUBSCRIPTION_PRICE
-    return await subscriptions.get_effective_price(interaction.user)
-
-
 async def send_checkout_link(
     interaction: discord.Interaction,
     tx_type: str,
@@ -47,10 +31,10 @@ async def send_checkout_link(
     idea_id: int | None = None,
 ):
     """
-    Creates a PayPal order for the correct amount, then tries to DM the
-    buyer the approval link (matches the original spec: "bot DMs a
-    payment link"). Falls back to an ephemeral in-channel reply if
-    their DMs are closed to server members.
+    Creates a PayPal order, then tries to DM the buyer the approval
+    link (matches the original spec: "bot DMs a payment link"). Falls
+    back to an ephemeral in-channel reply if their DMs are closed to
+    server members.
 
     Nothing is unlocked here - only PayPal's redirect back to our
     /paypal/capture route (see webhook_server.py), which is what
@@ -63,8 +47,6 @@ async def send_checkout_link(
             ephemeral=True,
         )
         return
-
-    amount = await _resolve_amount(interaction, tx_type)
 
     # Our own metadata rides along as query params on the return_url -
     # PayPal appends its own (?token=<order_id>) to whatever URL we give
@@ -87,7 +69,6 @@ async def send_checkout_link(
             cancel_url=cancel_url,
             product_name=product_name,
             custom_id=custom_id,
-            amount_usd=f"{amount}.00",
         )
     except Exception:
         await interaction.response.send_message(
@@ -99,7 +80,7 @@ async def send_checkout_link(
     link_view = discord.ui.View(timeout=None)
     link_view.add_item(
         discord.ui.Button(
-            label=f"Pay ${amount} - Card or PayPal",
+            label=f"Pay ${PRICE} - Card or PayPal",
             style=discord.ButtonStyle.link,
             url=approve_url,
             emoji="💳",
@@ -107,31 +88,11 @@ async def send_checkout_link(
     )
 
     message_text = (
-        f"Complete your ${amount} payment below - **no PayPal account needed**, you can "
+        f"Complete your ${PRICE} payment below - **no PayPal account needed**, you can "
         "pay with any credit or debit card directly on that page (or log in with PayPal "
         "if you prefer). I'll message you again the moment it's confirmed - usually just "
         "a few seconds after you pay."
     )
-
-    # The upsell: only shown when paying the full $10 (not already
-    # discounted, and not for the pass purchase itself) - this is the
-    # "$10 (or $2 with subscription)" nudge, placed right at the moment
-    # it's most persuasive: the instant they see the full price.
-    if tx_type != "subscription" and amount == PRICE:
-        message_text += (
-            f"\n\n💡 **Tip:** Get a 30-Day Pass for ${subscriptions.SUBSCRIPTION_PRICE} and pay only "
-            f"${subscriptions.DISCOUNT_PRICE} per idea instead of ${PRICE} - use `/subscribe`."
-        )
-
-    # If they're buying a pass while already having days left, let them
-    # know upfront that this just extends it rather than resetting it.
-    if tx_type == "subscription":
-        remaining = await subscriptions.days_remaining(interaction.user.id)
-        if remaining > 0:
-            message_text += (
-                f"\n\nYou already have **{remaining} day(s)** left on your current pass - "
-                "this will add 30 more days on top of that, not replace it."
-            )
 
     try:
         await interaction.user.send(content=message_text, view=link_view)
