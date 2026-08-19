@@ -29,6 +29,7 @@ from discord.ext import commands
 import checkout_flow
 import database
 import paypal_service
+import subscriptions
 from utils import PRICE, is_free_publisher
 
 
@@ -260,12 +261,20 @@ class MarketplaceCog(commands.Cog):
                 color=discord.Color.gold(),
             )
             embed.add_field(name="Category", value=idea["category"], inline=True)
-            embed.add_field(name="Price", value=f"${idea['price']}", inline=True)
+            embed.add_field(
+                name="Price",
+                value=f"${idea['price']} (${subscriptions.DISCOUNT_PRICE} with a 30-Day Pass)",
+                inline=True,
+            )
             embed.set_footer(text=f"Idea #{idea['idea_id']}")
             embeds.append(embed)
             view.add_item(BuyButton(idea_id=idea["idea_id"]))
 
-        await interaction.response.send_message(embeds=embeds, view=view, ephemeral=True)
+        content = None
+        if not is_free_publisher(interaction.user) and not await subscriptions.has_active_pass(interaction.user.id):
+            content = f"💡 Tip: get a 30-Day Pass with `/subscribe` and pay ${subscriptions.DISCOUNT_PRICE} instead of ${PRICE} per idea."
+
+        await interaction.response.send_message(content=content, embeds=embeds, view=view, ephemeral=True)
 
     @app_commands.command(name="random", description=f"Pay ${PRICE} for a random published idea")
     async def random_idea(self, interaction: discord.Interaction):

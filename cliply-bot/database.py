@@ -79,6 +79,20 @@ async def init_db():
             )
         """)
 
+        # Migration: adds the subscription_expires_at column to an
+        # EXISTING users table without touching any existing rows or
+        # data. CREATE TABLE IF NOT EXISTS above only runs once, the
+        # very first time - it does nothing on every later startup, so
+        # a brand-new column added to the schema needs its own explicit
+        # ALTER TABLE to actually reach a database that already exists
+        # (e.g. your live one on Railway's Volume). SQLite has no
+        # "ADD COLUMN IF NOT EXISTS", so we just try it and ignore the
+        # "duplicate column" error on every startup after the first.
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN subscription_expires_at TEXT")
+        except aiosqlite.OperationalError:
+            pass  # column already exists - already migrated
+
         await db.commit()
 
 
@@ -402,3 +416,29 @@ async def get_admin_stats() -> dict:
         "total_published": total_published,
         "total_sold": total_sold,
     }
+
+# ---------------------------------------------------------------------------
+# 30-Day Pass (subscription) - stores a single expiry timestamp per user.
+# This isn't a real recurring PayPal subscription (see subscriptions.py
+# for why) - it's just a plain $5 one-time order that extends this date
+# by 30 days. "Active" simply means this date is in the future.
+# ---------------------------------------------------------------------------
+
+async def get_subscription_expiry(user_id: int) -> str | None:
+    """Returns the ISO timestamp their pass expires at, or None if they've never had one."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT subscription_expires_at FROM users WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def set_subscription_expiry(user_id: int, expires_at: str):
+    """Sets (or extends) when this user's 30-Day Pass expires."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET subscription_expires_at = ? WHERE user_id = ?",
+            (expires_at, user_id),
+        )
+        await db.commit()
