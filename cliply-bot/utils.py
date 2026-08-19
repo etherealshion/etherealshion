@@ -11,7 +11,7 @@ Python would raise a circular import error.
 
 import os
 
-PRICE = 00.01  # both a write slot and a purchase cost $10
+PRICE = 00.02  # both a write slot and a purchase cost $10
 
 # Centralized here (rather than redefined in admin.py, support.py,
 # etc.) so there's exactly one place reading this from the environment -
