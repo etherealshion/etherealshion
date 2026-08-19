@@ -25,6 +25,7 @@ import database
 import webhook_server
 from cogs.write import StartWritingView
 from cogs.support import TicketButtonView
+from cogs.subscription import SubscribeButtonView
 
 # load_dotenv() reads your .env file and makes its lines available
 # through os.getenv(), just like real environment variables.
@@ -73,6 +74,7 @@ async def on_ready():
     # restart, but clicking it would silently do nothing.
     bot.add_view(StartWritingView())
     bot.add_view(TicketButtonView())
+    bot.add_view(SubscribeButtonView())
 
     if TEST_GUILD:
         # Copy our globally-registered commands into this one guild's
