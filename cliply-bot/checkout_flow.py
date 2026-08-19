@@ -89,7 +89,11 @@ async def send_checkout_link(
             custom_id=custom_id,
             amount_usd=f"{amount}.00",
         )
-    except Exception:
+    except Exception as error:
+        # Printed explicitly (not just re-raised) so the failure reason
+        # is guaranteed to appear as its own clearly-labeled log line,
+        # even if the traceback below it scrolls past or gets truncated.
+        print(f"[checkout_flow] send_checkout_link failed: {type(error).__name__}: {error}")
         await interaction.response.send_message(
             "⚠️ Couldn't start a PayPal checkout right now - please try again in a moment.",
             ephemeral=True,

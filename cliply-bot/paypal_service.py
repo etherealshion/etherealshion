@@ -68,6 +68,17 @@ async def _get_access_token() -> str:
             },
             data={"grant_type": "client_credentials"},
         )
+        if response.status_code >= 400:
+            # Print the exact reason PayPal rejected the OAuth request
+            # (bad client id/secret, wrong mode, disabled app, etc.)
+            # BEFORE raising, so it's impossible to miss in the logs -
+            # raise_for_status() alone only gives a generic "400 Client
+            # Error" with no explanation of WHY.
+            print(
+                f"[paypal_service] OAuth token request failed: "
+                f"status={response.status_code} body={response.text} "
+                f"mode={MODE} base_url={BASE_URL}"
+            )
         response.raise_for_status()
         return response.json()["access_token"]
 
@@ -124,6 +135,15 @@ async def create_order(
                 },
             },
         )
+        if response.status_code >= 400:
+            # Same reasoning as _get_access_token above - print PayPal's
+            # actual rejection reason (e.g. bad amount format, invalid
+            # currency, malformed custom_id) before raising.
+            print(
+                f"[paypal_service] Create order failed: "
+                f"status={response.status_code} body={response.text} "
+                f"amount={amount_usd} mode={MODE}"
+            )
         response.raise_for_status()
         data = response.json()
 
